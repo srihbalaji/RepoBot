@@ -15,15 +15,15 @@ from google.cloud import dialogflow_v2 as dialogflow
 
 
 
-# Flask app setup for IP restriction # new
-app = Flask(__name__)  # new
+# Flask app setup for IP restriction 
+app = Flask(__name__) 
 
 # Add the list of allowed IPs # new
 ALLOWED_IPS = ["127.0.0.1", "192.168.1.10"]  # Add your trusted IPs here # new
 
-# Function to restrict access by IP # new
-@app.before_request  # new
-def restrict_ip():  # new
+# Function to restrict access by IP 
+@app.before_request  
+def restrict_ip():  
     """Restrict access to only allowed IP addresses."""  # new
     client_ip = request.remote_addr  # new
     if client_ip not in ALLOWED_IPS:  # new
@@ -80,7 +80,7 @@ def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
     # Preprocess text chunks (optional: remove punctuations, convert to lowercase)
-    # ... (your preprocessing logic here)
+
 
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
@@ -109,14 +109,14 @@ def get_conversational_chain():
 
 
 
-def query_dialogflow(project_id, session_id, texts, language_code="en"):  #%%%%%
-    session_client = dialogflow.SessionsClient()  #%%%%
-    session = session_client.session_path(project_id, session_id)  #%%%
-    for text in texts:  #%%%
-        text_input = dialogflow.TextInput(text=text, language_code=language_code)  #%%%%
-        query_input = dialogflow.QueryInput(text=text_input)  #%%%
-        response = session_client.detect_intent(request={"session": session, "query_input": query_input})  #%%
-        return response.query_result.fulfillment_text  #%%
+def query_dialogflow(project_id, session_id, texts, language_code="en"):  
+    session_client = dialogflow.SessionsClient()  
+    session = session_client.session_path(project_id, session_id)  
+    for text in texts:  
+        text_input = dialogflow.TextInput(text=text, language_code=language_code)  
+        query_input = dialogflow.QueryInput(text=text_input)  
+        response = session_client.detect_intent(request={"session": session, "query_input": query_input}) 
+        return response.query_result.fulfillment_text  
 
 def query_github(query):
     import requests
