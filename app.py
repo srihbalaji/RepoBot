@@ -1,3 +1,4 @@
+
 import streamlit as st
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -10,28 +11,48 @@ from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 import mysql.connector  # Added MySQL connector
-from flask import Flask, request, jsonify  
-from google.cloud import dialogflow_v2 as dialogflow
+from flask import Flask, request, jsonify
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
+# Flask app setup for IP restriction and rate limiting
+app = Flask(__name__)
 
+# Initialize Flask-Limiter
+limiter = Limiter(get_remote_address, app=app)
 
-# Flask app setup for IP restriction 
-app = Flask(__name__) 
+# Add the list of allowed IPs for access control
+ALLOWED_IPS = ["127.0.0.1", "192.168.1.10"]  # Add your trusted IPs here
 
-# Add the list of allowed IPs # new
-ALLOWED_IPS = ["127.0.0.1", "192.168.1.10"]  # Add your trusted IPs here # new
+# Function to restrict access by IP
+@app.before_request
+def restrict_ip():
+    """Restrict access to only allowed IP addresses."""
+    client_ip = request.remote_addr
+    if client_ip not in ALLOWED_IPS:
+        return jsonify({"error": "Access denied. Your IP is not allowed."}), 403
 
-# Function to restrict access by IP 
-@app.before_request  
-def restrict_ip():  
-    """Restrict access to only allowed IP addresses."""  # new
-    client_ip = request.remote_addr  # new
-    if client_ip not in ALLOWED_IPS:  # new
-        return jsonify({"error": "Access denied. Your IP is not allowed."}), 403  # new
+# Rate limiting error handler
+@limiter.error
+def rate_limit_error(e):
+    return jsonify(error="ratelimit exceeded", message=str(e.description)), 429
 
+# Rate limit for asking questions (10 requests per minute per IP)
+@app.route('/ask', methods=['POST'])
+@limiter.limit("10 per minute")  # 10 requests per minute per IP
+def ask_question():
+    user_question = request.json.get("question")
+    # Process the question and respond
+    response = user_input(user_question)  # Call your existing user_input function to get response
+    return jsonify({"answer": response})
 
-
-
+# Rate limit for uploading files (5 uploads per minute per IP)
+@app.route('/upload', methods=['POST'])
+@limiter.limit("5 per minute")  # 5 uploads per minute per IP
+def upload_file():
+    uploaded_file = request.files['file']
+    file_path = save_uploaded_file(uploaded_file)  # Your existing save_uploaded_file function
+    return jsonify({"message": "File uploaded successfully.", "file_path": file_path})
 
 load_dotenv()
 os.getenv("GOOGLE_API_KEY")
@@ -39,21 +60,19 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Database connection
 mydb = mysql.connector.connect(
-    host="localhost",       # Host, usually localhost
-    user="root",            # Replace with your MySQL username
-    password="root",  # Replace with your MySQL password
-    database="2chatpdf_db"     # Name of your database
+    host="localhost",       
+    user="root",            
+    password="root",  
+    database="2chatpdf_db"     
 )
 if mydb.is_connected():
     print("Successfully connected to the database")
 else:
     print("Failed to connect to the database")
 
+mycursor = mydb.cursor() 
 
-
-mycursor = mydb.cursor()    # To execute queries
-
-# Create a table if not exists (You can adjust the structure as per your need)
+# Create a table if not exists
 mycursor.execute("""
     CREATE TABLE IF NOT EXISTS user_queries (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -78,10 +97,6 @@ def get_text_chunks(text):
 
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-    # Preprocess text chunks (optional: remove punctuations, convert to lowercase)
-
-
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
 
@@ -103,37 +118,6 @@ def get_conversational_chain():
 
     return chain
 
-
-
-
-
-
-
-def query_dialogflow(project_id, session_id, texts, language_code="en"):  
-    session_client = dialogflow.SessionsClient()  
-    session = session_client.session_path(project_id, session_id)  
-    for text in texts:  
-        text_input = dialogflow.TextInput(text=text, language_code=language_code)  
-        query_input = dialogflow.QueryInput(text=text_input)  
-        response = session_client.detect_intent(request={"session": session, "query_input": query_input}) 
-        return response.query_result.fulfillment_text  
-
-def query_github(query):
-    import requests
-    headers = {"Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"}
-    url = f"https://api.github.com/search/repositories?q={query}"
-    response = requests.get(url, headers=headers)
-    print(f"GitHub API Status Code: {response.status_code}")  # Debugging line
-    if response.status_code == 200:
-        results = response.json()["items"][:5]
-        return "\n".join([f"{repo['name']}: {repo['html_url']}" for repo in results])
-    print(f"GitHub API Error: {response.json()}")  # Debugging line
-    return "No repositories found or an error occurred."
-
-
-
-
-
 def user_input(user_question):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
@@ -147,19 +131,7 @@ def user_input(user_question):
     )
 
     bot_response = response["output_text"]
-
-    if "answer is not available in the context" in bot_response:  
-        # Dialogflow fallback
-        project_id = "askyourbook"  # Replace with your project ID
-        session_id = "12345"  # Example session ID 
-        bot_response = query_dialogflow(project_id, session_id, [user_question])  
-        if not bot_response or bot_response.strip() == "answer is not available in the context":
-            bot_response = query_github(user_question)  # Query GitHub if no Dialogflow response #***#***#******#*****#*****#*****#
-
-
-
-
-
+    
     # Store query and response in the database
     mycursor.execute("""
         INSERT INTO user_queries (user_query, bot_response)
@@ -168,8 +140,7 @@ def user_input(user_question):
 
     mydb.commit()  # Commit the changes to the database
 
-    # Output to Streamlit
-    st.write("Reply: ", bot_response)
+    return bot_response
 
 def show_previous_queries():
     mycursor.execute("SELECT * FROM user_queries ORDER BY timestamp DESC LIMIT 5")
@@ -181,11 +152,9 @@ def show_previous_queries():
         st.write(f"Timestamp: {query[3]}")
         st.write("---")
 
-
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
-
 
 def save_uploaded_file(uploaded_file):
     file_path = os.path.join(UPLOAD_FOLDER, uploaded_file.name)
@@ -197,7 +166,6 @@ def save_uploaded_file(uploaded_file):
     except Exception as e:
         print(f"Error saving file: {e}")  # Error handling
         return None
-
 
 def main():
     st.set_page_config("Chat PDF")
@@ -211,7 +179,6 @@ def main():
     with st.sidebar:
         st.title("Menu:")
         pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
-        # new--------------#new: Save the uploaded file to disk and process
         if pdf_docs:
             for pdf_doc in pdf_docs:
                 file_path = save_uploaded_file(pdf_doc)  # Save the uploaded file
@@ -228,4 +195,4 @@ def main():
         show_previous_queries()
 
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
